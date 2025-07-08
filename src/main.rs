@@ -1,7 +1,7 @@
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use pump_interface::accounts::PoolAccount;
-use spl_token::state::{Account as SplAccount, Mint as SplMint};
+use spl_token::state::Account as SplAccount;
 use solana_program::program_pack::Pack;
 use std::io::{self, Write};
 use tonic::transport::channel::ClientTlsConfig;
@@ -22,9 +22,6 @@ struct Args {
     /// X-Token for authentication
     #[clap(long)]
     x_token: String,
-    /// Watch only the base vault and its mint
-    #[clap(long)]
-    vault_only: bool,
 }
 
 #[tokio::main]
@@ -37,33 +34,29 @@ async fn main() -> anyhow::Result<()> {
     let mut quote = String::new();
     let mut base = String::new();
     let mut base_mint = String::new();
+    let mut quote_mint = String::new();
 
-    if !args.vault_only {
-        print!("Pool address: ");
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut pool)?;
-        print!("Base vault address: ");
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut base)?;
-        print!("Quote vault address: ");
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut quote)?;
-        print!("Base-token mint address: ");
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut base_mint)?;
-    } else {
-        print!("Base vault address: ");
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut base)?;
-        print!("Base-token mint address: ");
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut base_mint)?;
-    }
+    print!("Pool address: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut pool)?;
+    print!("Base vault address: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut base)?;
+    print!("Base-token mint address: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut base_mint)?;
+    print!("Quote vault address: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut quote)?;
+    print!("Quote-token mint address: ");
+    io::stdout().flush()?;
+    io::stdin().read_line(&mut quote_mint)?;
 
     let pool = pool.trim().to_string();
     let base = base.trim().to_string();
     let quote = quote.trim().to_string();
     let base_mint = base_mint.trim().to_string();
+    let quote_mint = quote_mint.trim().to_string();
 
     // Connect to the Geyser gRPC endpoint
     let mut client = GeyserGrpcClient::build_from_shared(args.endpoint)?
@@ -73,11 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Build subscription filter for the desired accounts
-    let accounts = if args.vault_only {
-        vec![base.clone(), base_mint.clone()]
-    } else {
-        vec![pool.clone(), base.clone(), quote.clone(), base_mint.clone()]
-    };
+    let accounts = vec![pool.clone(), base.clone(), quote.clone()];
 
     let filter = SubscribeRequestFilterAccounts {
         account: accounts,
@@ -104,8 +93,17 @@ async fn main() -> anyhow::Result<()> {
     let (mut tx, mut stream) = client.subscribe_with_request(Some(request)).await?;
     println!("Subscribed - receiving updates. Ctrl+C to exit.");
 
-    // Store mint decimals once unpacked
-    let mut mint_decimals: Option<u8> = None;
+    // Determine token decimals based on mint addresses
+    let base_decimals = if base_mint == "So11111111111111111111111111111111111111112" {
+        9
+    } else {
+        6
+    };
+    let quote_decimals = if quote_mint == "So11111111111111111111111111111111111111112" {
+        9
+    } else {
+        6
+    };
 
     // Handle incoming updates
     while let Some(message) = stream.next().await {
@@ -114,19 +112,8 @@ async fn main() -> anyhow::Result<()> {
             Some(UpdateOneof::Account(acc)) => {
                 if let Some(data) = acc.account {
                     let pk = bs58::encode(&data.pubkey).into_string();
-                    // If this is the mint account, unpack decimals
-                    if pk == base_mint {
-                        match SplMint::unpack(&data.data) {
-                            Ok(mint_acc) => {
-                                mint_decimals = Some(mint_acc.decimals);
-                                println!("Mint {} decimals set to {}", pk, mint_acc.decimals);
-                            }
-                            Err(e) => eprintln!("Failed to unpack mint {}: {}", pk, e),
-                        }
-                        continue;
-                    }
                     // Pool PDA -> print lp_supply
-                    if !args.vault_only && pk == pool {
+                    if pk == pool {
                         let pool_state = PoolAccount::deserialize(&data.data)
                             .map_err(|e| anyhow::anyhow!("Failed to deserialize PoolAccount: {}", e))?;
                         let info = pool_state.0;
@@ -140,29 +127,28 @@ async fn main() -> anyhow::Result<()> {
                         match SplAccount::unpack(&data.data) {
                             Ok(token_acc) => {
                                 let raw = token_acc.amount;
-                                if let Some(dec) = mint_decimals {
-                                    let human = (raw as f64) / 10f64.powi(dec as i32);
-                                    println!(
-                                        "Base vault {} @ slot {}: {:.6} tokens (raw={})",
-                                        pk, acc.slot, human, raw
-                                    );
-                                } else {
-                                    println!(
-                                        "Base vault {} @ slot {} raw tokens={} (mint decimals unknown)",
-                                        pk, acc.slot, raw
-                                    );
-                                }
+                                let human = (raw as f64) / 10f64.powi(base_decimals as i32);
+                                println!(
+                                    "Base vault {} @ slot {}: {:.6} tokens (raw={})",
+                                    pk, acc.slot, human, raw
+                                );
                             }
                             Err(e) => eprintln!("Failed to unpack base vault {}: {}", pk, e),
                         }
                     }
                     // Quote vault -> SOL balance
-                    else if !args.vault_only && pk == quote {
-                        let sol = (data.lamports as f64) / 1_000_000_000.0;
-                        println!(
-                            "Quote vault {} @ slot {} ~{:.9} SOL (lamports={})",
-                            pk, acc.slot, sol, data.lamports
-                        );
+                    else if pk == quote {
+                        match SplAccount::unpack(&data.data) {
+                            Ok(token_acc) => {
+                                let raw = token_acc.amount;
+                                let human = (raw as f64) / 10f64.powi(quote_decimals as i32);
+                                println!(
+                                    "Quote vault {} @ slot {}: {:.6} tokens (raw={})",
+                                    pk, acc.slot, human, raw
+                                );
+                            }
+                            Err(e) => eprintln!("Failed to unpack quote vault {}: {}", pk, e),
+                        }
                     }
                 }
             }
