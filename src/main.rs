@@ -14,6 +14,21 @@ use yellowstone_grpc_proto::prelude::{
     SubscribeRequestPing,
 };
 
+#[derive(Debug)]
+struct VaultUpdate {
+    slot: u64,
+    amount: f64,
+}
+
+#[derive(Debug)]
+struct RamDb {
+    pool_address: String,
+    base_vault_address: String,
+    quote_vault_address: String,
+    base_updates: Vec<VaultUpdate>,
+    quote_updates: Vec<VaultUpdate>,
+}
+
 #[derive(Parser)]
 struct Args {
     /// Geyser gRPC endpoint URL
@@ -57,6 +72,15 @@ async fn main() -> anyhow::Result<()> {
     let quote = quote.trim().to_string();
     let base_mint = base_mint.trim().to_string();
     let quote_mint = quote_mint.trim().to_string();
+
+    // Initialize in-memory database with static fields
+    let mut ram_db = RamDb {
+        pool_address: pool.clone(),
+        base_vault_address: base.clone(),
+        quote_vault_address: quote.clone(),
+        base_updates: Vec::new(),
+        quote_updates: Vec::new(),
+    };
 
     // Connect to the Geyser gRPC endpoint
     let mut client = GeyserGrpcClient::build_from_shared(args.endpoint)?
@@ -105,10 +129,18 @@ async fn main() -> anyhow::Result<()> {
         6
     };
 
-    // Handle incoming updates
-    while let Some(message) = stream.next().await {
-        let message = message?;
-        match message.update_oneof {
+    // Handle incoming updates. Exit gracefully on Ctrl+C.
+    let mut interrupt = tokio::signal::ctrl_c();
+    loop {
+        tokio::select! {
+            _ = &mut interrupt => {
+                println!("Received Ctrl+C - shutting down");
+                break;
+            }
+            maybe_message = stream.next() => {
+                let Some(message) = maybe_message else { break; };
+                let message = message?;
+                match message.update_oneof {
             Some(UpdateOneof::Account(acc)) => {
                 if let Some(data) = acc.account {
                     let pk = bs58::encode(&data.pubkey).into_string();
@@ -132,6 +164,7 @@ async fn main() -> anyhow::Result<()> {
                                     "Base vault {} @ slot {}: {:.6} tokens (raw={})",
                                     pk, acc.slot, human, raw
                                 );
+                                ram_db.base_updates.push(VaultUpdate { slot: acc.slot, amount: human });
                             }
                             Err(e) => eprintln!("Failed to unpack base vault {}: {}", pk, e),
                         }
@@ -146,6 +179,7 @@ async fn main() -> anyhow::Result<()> {
                                     "Quote vault {} @ slot {}: {:.6} tokens (raw={})",
                                     pk, acc.slot, human, raw
                                 );
+                                ram_db.quote_updates.push(VaultUpdate { slot: acc.slot, amount: human });
                             }
                             Err(e) => eprintln!("Failed to unpack quote vault {}: {}", pk, e),
                         }
@@ -164,5 +198,7 @@ async fn main() -> anyhow::Result<()> {
             _ => {}
         }
     }
+
+    println!("Final RAM DB: {:?}", ram_db);
     Ok(())
 }
