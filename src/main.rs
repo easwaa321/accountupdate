@@ -129,10 +129,18 @@ async fn main() -> anyhow::Result<()> {
         6
     };
 
-    // Handle incoming updates
-    while let Some(message) = stream.next().await {
-        let message = message?;
-        match message.update_oneof {
+    // Handle incoming updates. Exit gracefully on Ctrl+C.
+    let mut interrupt = tokio::signal::ctrl_c();
+    loop {
+        tokio::select! {
+            _ = &mut interrupt => {
+                println!("Received Ctrl+C - shutting down");
+                break;
+            }
+            maybe_message = stream.next() => {
+                let Some(message) = maybe_message else { break; };
+                let message = message?;
+                match message.update_oneof {
             Some(UpdateOneof::Account(acc)) => {
                 if let Some(data) = acc.account {
                     let pk = bs58::encode(&data.pubkey).into_string();
