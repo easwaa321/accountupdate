@@ -22,6 +22,9 @@ struct Args {
     /// X-Token for authentication
     #[clap(long)]
     x_token: String,
+    /// Watch only the base vault and its mint
+    #[clap(long)]
+    vault_only: bool,
 }
 
 #[tokio::main]
@@ -29,15 +32,33 @@ async fn main() -> anyhow::Result<()> {
     // Parse CLI arguments
     let args = Args::parse();
 
-    // Prompt for the four account pubkeys
-    print!("Pool address: "); io::stdout().flush()?;
-    let mut pool = String::new(); io::stdin().read_line(&mut pool)?;
-    print!("Base vault address: "); io::stdout().flush()?;
-    let mut base = String::new(); io::stdin().read_line(&mut base)?;
-    print!("Quote vault address: "); io::stdout().flush()?;
-    let mut quote = String::new(); io::stdin().read_line(&mut quote)?;
-    print!("Base-token mint address: "); io::stdout().flush()?;
-    let mut base_mint = String::new(); io::stdin().read_line(&mut base_mint)?;
+    // Prompt for account pubkeys
+    let mut pool = String::new();
+    let mut quote = String::new();
+    let mut base = String::new();
+    let mut base_mint = String::new();
+
+    if !args.vault_only {
+        print!("Pool address: ");
+        io::stdout().flush()?;
+        io::stdin().read_line(&mut pool)?;
+        print!("Base vault address: ");
+        io::stdout().flush()?;
+        io::stdin().read_line(&mut base)?;
+        print!("Quote vault address: ");
+        io::stdout().flush()?;
+        io::stdin().read_line(&mut quote)?;
+        print!("Base-token mint address: ");
+        io::stdout().flush()?;
+        io::stdin().read_line(&mut base_mint)?;
+    } else {
+        print!("Base vault address: ");
+        io::stdout().flush()?;
+        io::stdin().read_line(&mut base)?;
+        print!("Base-token mint address: ");
+        io::stdout().flush()?;
+        io::stdin().read_line(&mut base_mint)?;
+    }
 
     let pool = pool.trim().to_string();
     let base = base.trim().to_string();
@@ -51,9 +72,15 @@ async fn main() -> anyhow::Result<()> {
         .connect()
         .await?;
 
-    // Build a single subscription filtering for pool, vaults, and mint
+    // Build subscription filter for the desired accounts
+    let accounts = if args.vault_only {
+        vec![base.clone(), base_mint.clone()]
+    } else {
+        vec![pool.clone(), base.clone(), quote.clone(), base_mint.clone()]
+    };
+
     let filter = SubscribeRequestFilterAccounts {
-        account: vec![pool.clone(), base.clone(), quote.clone(), base_mint.clone()],
+        account: accounts,
         owner: Vec::new(),
         nonempty_txn_signature: None,
         filters: Vec::new(),
@@ -99,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
                     // Pool PDA -> print lp_supply
-                    if pk == pool {
+                    if !args.vault_only && pk == pool {
                         let pool_state = PoolAccount::deserialize(&data.data)
                             .map_err(|e| anyhow::anyhow!("Failed to deserialize PoolAccount: {}", e))?;
                         let info = pool_state.0;
@@ -130,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     // Quote vault -> SOL balance
-                    else if pk == quote {
+                    else if !args.vault_only && pk == quote {
                         let sol = (data.lamports as f64) / 1_000_000_000.0;
                         println!(
                             "Quote vault {} @ slot {} ~{:.9} SOL (lamports={})",

@@ -4,7 +4,13 @@ This project utilizes **Solana's gRPC streaming capabilities** to monitor and an
 in real-time on the Solana blockchain.
 By leveraging **GlobalConfig** and **PoolAccount** data, it enables precise parsing of key account information, 
 providing insights into market trends, liquidity, and transactions.
-With Solana’s high-performance network and low-latency streaming,
+To stream only a token vault and its mint pass `--vault-only`:
+
+```
+$ cargo run -- --endpoint <endpoint> --x-token <token> --vault-only
+```
+
+With Solanaâ€™s high-performance network and low-latency streaming,
 users gain up-to-date visibility into pump fun activities on the decentralized exchange (DEX), 
 empowering faster decision-making. 
 This project enhances the ability to track **DeFi** activities on Solana,
